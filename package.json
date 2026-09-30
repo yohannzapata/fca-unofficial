@@ -1,0 +1,66 @@
+{
+  "name": "fca-unofficial",
+  "version": "0.0.0",
+  "description": "A TypeScript-first, read-oriented unofficial Facebook Messenger client for Node.js, built for personal use with your own account. Clean-room rewrite; experimental.",
+  "keywords": [
+    "facebook",
+    "messenger",
+    "facebook-messenger",
+    "messenger-client",
+    "fca",
+    "fca-unofficial",
+    "facebook-chat-api",
+    "unofficial-api",
+    "typescript",
+    "nodejs",
+    "lightspeed",
+    "chat"
+  ],
+  "homepage": "https://github.com/yohannzapata/fca-unofficial#readme",
+  "bugs": {
+    "url": "https://github.com/yohannzapata/fca-unofficial/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yohannzapata/fca-unofficial.git"
+  },
+  "license": "MIT",
+  "author": "Yohann Joachim Zapata (https://yohannzapata.com)",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.0",
+    "eslint": "10.11.0",
+    "prettier": "3.9.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.0",
+    "vitest": "5.0.2"
+  }
+}

@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tmp
+
+# Session material — never commit
+.session/
+appstate.json
+*.session.json
+*.session.json.bak
+*.session.json.*.tmp
+session*.json
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Live protocol traces may contain personal data until sanitized
+traces/

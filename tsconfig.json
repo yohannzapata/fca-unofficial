@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    // Examples import the package by name: type-checked against src, executed against dist.
+    "paths": { "fca-unofficial": ["./src/index.ts"] },
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": false,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src", "tests", "examples", "tools", "vitest.config.ts"]
+}
