@@ -26,7 +26,7 @@ export const FEATURE_STATUS = Object.freeze({
   },
   realtimeReceive: {
     status: "unimplemented",
-    note: "Planned: Lightspeed over the DGW gateway. Experimental until verified against live Messenger.",
+    note: "In development: DGW transport and Lightspeed decoder are implemented; sync wiring is pending. Experimental until verified against live Messenger.",
   },
   messageEdits: { status: "unimplemented", note: "Planned." },
   messageUnsends: { status: "unimplemented", note: "Planned." },

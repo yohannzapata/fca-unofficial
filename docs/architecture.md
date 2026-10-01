@@ -65,8 +65,8 @@ src/
 │                               MemorySessionStore, FileSessionStore, codecs
 ├── transport/
 │   ├── http/                   HttpClient, CookieJar, retry policy
-│   └── dgw/                    (planned) frame codec, DgwConnection, streams
-├── protocol/                   bootstrap; (planned) graphql, lightspeed, sync,
+│   └── dgw/                    frame codec, DgwConnection, streams
+├── protocol/                   bootstrap, lightspeed decoder; (planned) graphql, sync,
 │                               ProtocolClient
 ├── pipeline/                   (planned) normalizers, ordering, dedup, reconciler
 ├── services/                   (planned) MessageService, ThreadService, UserService
@@ -245,20 +245,31 @@ dedupSize, reconciliations }`. It is a plain local object with no network I/O.
 
 ## 7. Realtime pipeline _(planned)_
 
-### 7.1 Transport
+### 7.1 Transport _(implemented)_
 
-`DgwConnection` implements the frame layouts from `protocol-status.md` §3.2 over the
-native `WebSocket`: one-off request/response streams and persistent streams, acks,
-ping/pong, drain handling, and close-code classification. It exposes:
+`DgwConnection` (`src/transport/dgw/`) implements the frame layouts from
+`protocol-status.md` §3.2 over the native `WebSocket`: one-off request/response streams
+and persistent streams, per-stream acks, ping/pong, an inactivity watchdog, drain
+notification, and close-code classification. Decisions are recorded in
+`protocol-status.md` §14.
 
 ```ts
-interface RealtimeConnection {
-  request(payload: Uint8Array, opts): Promise<Uint8Array>; // one-off stream
-  openStream(init: Uint8Array, onData: (p: Uint8Array) => void): Promise<StreamHandle>;
-  readonly closed: Promise<CloseInfo>; // settles once
+class DgwConnection {
+  static open(options: DgwConnectionOptions): Promise<DgwConnection>;
+  request(payload: Uint8Array, opts?: RequestOptions): Promise<Uint8Array | undefined>; // one-off
+  openStream(opts: OpenStreamOptions): Promise<DgwStream>; // persistent, server pushes data
+  readonly closed: Promise<DgwClosedInfo>; // settles exactly once, never rejects
   close(): Promise<void>; // idempotent
 }
 ```
+
+A pushed data frame is acknowledged only after its handler returns. If the handler throws,
+the frame is not acknowledged and the connection closes (`handler_error`), so the
+supervisor reconnects and cursor catch-up re-delivers the data.
+
+The Lightspeed decoder (`src/protocol/lightspeed/`) turns payloads into ordered
+stored-procedure calls, and `procedures.ts` maps those calls onto typed rows. That
+positional schema file is the single place to edit when Meta changes a schema.
 
 ### 7.2 Protocol
 
