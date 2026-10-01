@@ -79,4 +79,29 @@ describe("SessionManager", () => {
     manager.cookieJar().setFromResponse(WWW, ["fr=NEW; Domain=.facebook.com; Path=/; Secure"]);
     await expect(manager.flush()).resolves.toBeUndefined();
   });
+
+  it("persists sync cursors together with rotated cookies, debounced", async () => {
+    const store = new CountingStore(fakeSession(1));
+    const manager = new SessionManager({ store, logger: silentLogger, now: () => 7, saveDebounceMs: 1_000 });
+    await manager.load();
+    manager.updateSync({ "1": { cursor: "c1", sendSyncParams: false, syncChannel: 1 } });
+    manager.cookieJar().setFromResponse(WWW, ["fr=NEW; Domain=.facebook.com; Path=/; Secure"]);
+    manager.updateSync({ "1": { cursor: "c2", sendSyncParams: false, syncChannel: 1 } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(store.saves).toBe(1);
+    const saved = await store.load();
+    expect(saved?.sync).toEqual({
+      databases: { "1": { cursor: "c2", sendSyncParams: false, syncChannel: 1 } },
+      updatedAt: 7,
+    });
+    expect(saved?.cookies.find((c) => c.name === "fr")?.value).toBe("NEW");
+  });
+
+  it("ignores sync updates before a session is loaded", async () => {
+    const store = new CountingStore(fakeSession(1));
+    const manager = new SessionManager({ store, logger: silentLogger });
+    manager.updateSync({ "1": { cursor: "c1", sendSyncParams: false, syncChannel: 1 } });
+    await manager.flush();
+    expect(store.saves).toBe(0);
+  });
 });

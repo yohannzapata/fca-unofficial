@@ -1,12 +1,12 @@
-import { ProtocolNotImplementedError } from "../errors/errors.js";
 import type { SupervisedConnection } from "../lifecycle/supervisor.js";
 import type { Logger } from "../logging/logger.js";
 import type { SessionData } from "../session/session.js";
 import type { CookieJar } from "../transport/http/cookie-jar.js";
 import type { HttpClient } from "../transport/http/http-client.js";
-import { missingForRealtime } from "./bootstrap/bootstrap-config.js";
 import type { BrowserProfile } from "./bootstrap/browser-profile.js";
 import { loadBootstrap } from "./bootstrap/bootstrapper.js";
+import { RealtimeSession, type RealtimeSink, type RealtimeTuning } from "./realtime/realtime-session.js";
+import type { SyncStateMap } from "./sync/sync-state.js";
 
 /** Everything the protocol layer needs for one connection attempt, provided by the client. */
 export interface ProtocolContext {
@@ -17,6 +17,15 @@ export interface ProtocolContext {
   readonly profile: BrowserProfile;
   readonly logger: Logger;
   readonly now: () => number;
+  readonly realtime: {
+    /** Receives decoded row batches and cursor updates. */
+    readonly sink: RealtimeSink;
+    /** Stored sync cursors, if any. */
+    readonly syncState: SyncStateMap | undefined;
+    /** Send the initial thread-list fetch (first connection of a client instance). */
+    readonly initialThreadFetch: boolean;
+    readonly tuning?: RealtimeTuning;
+  };
 }
 
 /**
@@ -32,12 +41,7 @@ export interface ProtocolClient {
   connect(context: ProtocolContext, signal: AbortSignal): Promise<SupervisedConnection>;
 }
 
-/**
- * Bootstrap and session validation are implemented; the realtime transport
- * (DGW/Lightspeed) is not yet. connect() therefore validates the session with
- * Facebook (surfacing SessionExpiredError / CheckpointRequiredError) and then fails
- * honestly and permanently instead of pretending to connect.
- */
+/** Bootstrap (facebook.com/messages) followed by a Lightspeed realtime session over DGW. */
 export class MessengerProtocolClient implements ProtocolClient {
   async connect(context: ProtocolContext, signal: AbortSignal): Promise<SupervisedConnection> {
     const { config } = await loadBootstrap(
@@ -51,12 +55,20 @@ export class MessengerProtocolClient implements ProtocolClient {
       context.session.userId,
       signal,
     );
-    const missing = missingForRealtime(config);
-    throw new ProtocolNotImplementedError(
-      "realtime",
-      "Session verified with Facebook, but the realtime transport (DGW/Lightspeed) is not implemented yet. " +
-        "See docs/research/protocol-status.md.",
-      { details: { missingForRealtime: missing.join(",") || null } },
+    return RealtimeSession.start(
+      {
+        config,
+        userId: context.session.userId,
+        cookies: context.cookies,
+        profile: context.profile,
+        logger: context.logger,
+        now: context.now,
+        sink: context.realtime.sink,
+        syncState: context.realtime.syncState,
+        initialThreadFetch: context.realtime.initialThreadFetch,
+        ...(context.realtime.tuning === undefined ? {} : { tuning: context.realtime.tuning }),
+      },
+      signal,
     );
   }
 }

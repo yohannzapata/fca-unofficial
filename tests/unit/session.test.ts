@@ -121,6 +121,34 @@ describe("validateSessionData", () => {
     expect(validateSessionData(null).ok).toBe(false);
     expect(validateSessionData([]).ok).toBe(false);
   });
+
+  it("accepts stored sync cursors and rejects malformed ones", () => {
+    const databases = {
+      "1": { cursor: "c1", sendSyncParams: false, syncChannel: 1 },
+      "104": { cursor: null, sendSyncParams: true, syncChannel: 0 },
+    };
+    expect(validateSessionData({ ...fakeSession(), sync: { databases, updatedAt: NOW } }).ok).toBe(true);
+
+    const problems = (sync: unknown) => {
+      const result = validateSessionData({ ...fakeSession(), sync });
+      return result.ok ? [] : result.problems;
+    };
+    expect(problems("nope")).toEqual(["sync must be an object"]);
+    expect(problems({ databases })).toEqual(["sync.updatedAt must be a number"]);
+    expect(problems({ databases: [], updatedAt: NOW })).toEqual(["sync.databases must be an object"]);
+    expect(problems({ databases: { abc: databases["1"] }, updatedAt: NOW })).toEqual([
+      "sync.databases has an invalid database id",
+    ]);
+    expect(
+      problems({ databases: { "1": { cursor: 5, sendSyncParams: false, syncChannel: 1 } }, updatedAt: NOW }),
+    ).toEqual(["sync.databases[1] is invalid"]);
+    expect(
+      problems({
+        databases: { "1": { cursor: null, sendSyncParams: "no", syncChannel: 1.5 } },
+        updatedAt: NOW,
+      }),
+    ).toEqual(["sync.databases[1] is invalid"]);
+  });
 });
 
 describe("MemorySessionStore", () => {

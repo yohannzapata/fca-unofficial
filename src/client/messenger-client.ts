@@ -11,8 +11,10 @@ import type { ConnectionState } from "../lifecycle/connection-state.js";
 import { ConnectionSupervisor, type SupervisedConnection } from "../lifecycle/supervisor.js";
 import { createRedactingLogger, type Logger, silentLogger } from "../logging/logger.js";
 import type { ClientEvents } from "../model/events.js";
+import { EventPipeline, type PipelineStats } from "../pipeline/event-pipeline.js";
 import { createBrowserProfile } from "../protocol/bootstrap/browser-profile.js";
 import { MessengerProtocolClient, type ProtocolClient } from "../protocol/protocol-client.js";
+import type { RealtimeTuning } from "../protocol/realtime/realtime-session.js";
 import type { SessionStore } from "../session/session-store.js";
 import { HttpClient } from "../transport/http/http-client.js";
 import { SessionManager } from "./session-manager.js";
@@ -46,6 +48,8 @@ export interface ClientInternals {
   now?: () => number;
   random?: () => number;
   saveDebounceMs?: number;
+  realtime?: RealtimeTuning;
+  typingTimeoutMs?: number;
 }
 
 export interface ClientHealth {
@@ -59,6 +63,8 @@ export interface ClientHealth {
   readonly nextRetryAt: number | undefined;
   readonly lastError: ReturnType<MessengerError["toJSON"]> | undefined;
   readonly eventCounts: Readonly<Record<string, number>>;
+  /** Event pipeline counters: emitted events, suppressed duplicates, incomplete rows. */
+  readonly events: PipelineStats;
 }
 
 /**
@@ -75,7 +81,11 @@ export class MessengerClient {
   readonly #now: () => number;
   readonly #fetch: typeof fetch | undefined;
   readonly #userAgent: string | undefined;
+  readonly #realtimeTuning: RealtimeTuning | undefined;
+  readonly #pipeline: EventPipeline;
   readonly #eventCounts: Record<string, number> = {};
+  #selfUserId: string | undefined;
+  #everConnected = false;
   #destroyed = false;
   #destroying: Promise<void> | undefined;
 
@@ -92,7 +102,18 @@ export class MessengerClient {
     this.#now = internals.now ?? Date.now;
     this.#fetch = internals.fetch;
     this.#userAgent = options.userAgent;
+    this.#realtimeTuning = internals.realtime;
     this.#log = createRedactingLogger(options.logger ?? silentLogger).child({ component: "messenger" });
+    this.#pipeline = new EventPipeline({
+      selfUserId: () => this.#selfUserId,
+      emit: (event, payload) => {
+        // Each pipeline event maps 1:1 onto the client event of the same name.
+        (this.#emit as (e: string, p: unknown) => void)(event, payload);
+      },
+      logger: this.#log.child({ component: "pipeline" }),
+      now: this.#now,
+      ...(internals.typingTimeoutMs === undefined ? {} : { typingTimeoutMs: internals.typingTimeoutMs }),
+    });
     this.#protocol = internals.protocol ?? new MessengerProtocolClient();
     this.#sessions = new SessionManager({
       store,
@@ -123,6 +144,7 @@ export class MessengerClient {
       now: this.#now,
       ...(internals.random === undefined ? {} : { random: internals.random }),
       onStateChange: (change) => {
+        if (change.to === "connected") this.#everConnected = true;
         this.#emit("stateChange", change);
         const session = this.#sessions.current;
         if (change.to === "connected" && change.reason === "connected" && session) {
@@ -190,6 +212,7 @@ export class MessengerClient {
         await this.#supervisor.stop();
       } finally {
         this.#shutdown.abort(new OperationAbortedError("Client destroyed"));
+        this.#pipeline.dispose();
         await this.#sessions.reset();
         this.#emitter.removeAllListeners();
       }
@@ -211,11 +234,13 @@ export class MessengerClient {
       nextRetryAt: stats.nextRetryAt,
       lastError: stats.lastError?.toJSON(),
       eventCounts: { ...this.#eventCounts },
+      events: this.#pipeline.stats,
     };
   }
 
   async #connectOnce(signal: AbortSignal): Promise<SupervisedConnection> {
     const session = await this.#sessions.load();
+    this.#selfUserId = session.userId;
     const cookies = this.#sessions.cookieJar();
     const http = new HttpClient({
       cookieJar: cookies,
@@ -231,6 +256,19 @@ export class MessengerClient {
         profile: createBrowserProfile(this.#userAgent ?? session.userAgent),
         logger: this.#log,
         now: this.#now,
+        realtime: {
+          sink: {
+            batch: (batch) => {
+              this.#pipeline.process(batch);
+            },
+            syncState: (state) => {
+              this.#sessions.updateSync(Object.fromEntries(Object.entries(state)));
+            },
+          },
+          syncState: session.sync?.databases,
+          initialThreadFetch: !this.#everConnected,
+          ...(this.#realtimeTuning === undefined ? {} : { tuning: this.#realtimeTuning }),
+        },
       },
       signal,
     );

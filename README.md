@@ -13,9 +13,10 @@ read your messages and process them on your own machine. It has a typed API, kee
 session safe on disk, reconnects reliably, and sends nothing anywhere except to Facebook.
 
 > [!WARNING]
-> **Early development.** The library can validate your session with Facebook, but it
-> **cannot receive messages yet**. See [Project status](#project-status) and
-> [Roadmap](#roadmap).
+> **Early development.** Receiving messages, edits, unsends, reactions and typing
+> indicators is implemented and tested against a local simulation of Facebook's
+> gateway, but **has not yet been verified against live Messenger**. See
+> [Project status](#project-status) and [Roadmap](#roadmap).
 
 ## Contents
 
@@ -37,6 +38,10 @@ session safe on disk, reconnects reliably, and sends nothing anywhere except to 
 - **Reliable connection lifecycle.** A single supervised reconnect loop with exponential
   backoff, jitter and cancellation, and an explicit state machine. It is tested so that
   repeated "connection lost" signals produce exactly one reconnect.
+- **No missed messages.** Sync cursors are saved with your session. After a dropped
+  connection or a restart, messages that arrived in the meantime are delivered and
+  marked `recovered`; periodic reconciliation guards against silent stalls, and
+  duplicates are suppressed.
 - **Safe sessions.** Cookies are imported locally from your own browser. Sessions are
   stored in atomic, checksummed files with optional AES-256-GCM encryption. Corruption is
   detected, never silently ignored.
@@ -58,15 +63,17 @@ The same information is available at runtime as `FEATURE_STATUS`.
 | Session storage (atomic, checksummed, optional encryption) | stable                                  |
 | Connection lifecycle and reconnect supervision             | stable                                  |
 | Session validation with Facebook, checkpoint detection     | experimental                            |
-| Receiving messages in real time                            | in development                          |
+| Receiving messages in real time, with catch-up after gaps  | experimental                            |
+| Edits, unsends, reactions, typing indicators               | experimental                            |
+| Attachment details (photos, files, links)                  | planned                                 |
 | Thread list, message history, user profiles                | planned                                 |
-| Edits, unsends, reactions, typing indicators               | planned                                 |
 | End-to-end encrypted chats                                 | not supported (under evaluation)        |
 | Sending messages                                           | not supported (planned after read-only) |
 
 **Stable** means implemented, tested and independent of Facebook's protocol.
 **Experimental** means implemented and tested, but not yet verified against live
-Facebook.
+Facebook. Protocol behaviour is tested against synthetic data modelled on
+[documented sources](docs/research/protocol-status.md), never against recorded traffic.
 
 > [!IMPORTANT]
 > Personal one-to-one chats on Messenger are end-to-end encrypted by default. Their content
@@ -137,19 +144,21 @@ const client = new MessengerClient({
   logger: createConsoleLogger({ level: "info" }), // silent by default
 });
 
+client.on("message", (message) => {
+  const tag = message.recovered ? " (while offline)" : "";
+  console.log(`[${message.threadId}] ${message.senderId}: ${message.text ?? "(no text)"}${tag}`);
+});
 client.on("stateChange", ({ from, to, reason }) => console.log(`${from} -> ${to}`, reason ?? ""));
 client.on("error", (error) => console.error(error.code, error.message));
+process.once("SIGINT", () => void client.destroy());
 
-try {
-  await client.connect();
-} catch (error) {
-  // Today: rejects with PROTOCOL_NOT_IMPLEMENTED after validating the session.
-  console.error(error);
-} finally {
-  console.log(client.health());
-  await client.destroy();
-}
+await client.connect(); // resolves once connected and synced; reconnects automatically
 ```
+
+The first run on a newly imported session records the current inbox position and
+reports nothing old. From then on, messages that arrive while your program is not
+running are delivered when it next connects. A complete version is in
+[examples/basic/connect.ts](examples/basic/connect.ts).
 
 ## API overview
 
@@ -157,13 +166,27 @@ try {
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `new MessengerClient({ session, logger?, reconnect?, userAgent? })` | Creates a client for one account                                             |
 | `client.connect()` / `disconnect()` / `destroy()`                   | Lifecycle. `disconnect()` and `destroy()` are idempotent                     |
-| `client.on(event, listener)`                                        | Events: `ready`, `stateChange`, `error`. Returns an unsubscribe function     |
+| `client.on(event, listener)`                                        | Subscribe to an event (below). Returns an unsubscribe function               |
 | `client.state`, `client.health()`                                   | Current connection state and a local health snapshot                         |
 | `sessionFromCookies(input)`                                         | Validates exported cookies locally and builds a session                      |
 | `FileSessionStore`, `MemorySessionStore`                            | Session storage. Implement `SessionStore` for your own backend               |
 | `createPassphraseCodec()`, `createAesGcmCodec()`                    | Optional encryption at rest for `FileSessionStore`                           |
 | `probeSession({ session })`                                         | Read-only session check with a secret-free report                            |
 | `MessengerError` and subclasses                                     | Typed errors with stable `code` values. See [docs/errors.md](docs/errors.md) |
+
+| Event                            | Payload                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `message`                        | `Message`: `id`, `threadId`, `senderId`, `text`, `timestamp`, `isFromMe`, `mentions`, `replyTo`, … |
+| `messageEdit`                    | `{ messageId, threadId, text, editCount }`                                                         |
+| `messageDelete`                  | `{ messageId, threadId, reason: "unsent" \| "removed" }`                                           |
+| `reactionAdd` / `reactionRemove` | `{ messageId, threadId, actorId, reaction, isFromMe }`                                             |
+| `typing`                         | `{ threadId, userId, isTyping }`                                                                   |
+| `ready`, `stateChange`, `error`  | Connection lifecycle and failures                                                                  |
+
+Message-level events carry `recovered: true` when they were delivered by catch-up
+synchronization rather than pushed live. IDs are strings, because Messenger IDs exceed
+JavaScript's safe integer range. Delivery is at-least-once across restarts, so if you
+store messages, key them on `message.id`.
 
 ## Documentation
 
@@ -179,14 +202,16 @@ try {
 
 ## Roadmap
 
-1. **Real-time message receiving.** Facebook's current web gateway (DGW) and Lightspeed
-   sync, with gap filling after reconnects.
-2. **Read API.** Thread list, message history and user profiles.
-3. **Message events.** Edits, unsends, reactions and typing indicators, with duplicate
-   suppression.
-4. **Long-running reliability.** Soak and fault-injection testing.
-5. **Later.** End-to-end encrypted chats (under evaluation), sending messages, and an
-   optional compatibility layer for code written against older FCA-style APIs.
+- [x] **Real-time message receiving.** Facebook's current web gateway (DGW) and
+      Lightspeed sync, with gap filling after reconnects and restarts.
+- [x] **Message events.** Edits, unsends, reactions and typing indicators, with duplicate
+      suppression.
+- [ ] **Live verification.** Confirm the protocol behaviour against live Messenger and
+      move the experimental features to stable.
+- [ ] **Read API.** Thread list, message history, user profiles and attachment details.
+- [ ] **Long-running reliability.** Soak and fault-injection testing.
+- [ ] **Later.** End-to-end encrypted chats (under evaluation), sending messages, and an
+      optional compatibility layer for code written against older FCA-style APIs.
 
 ## Security and privacy
 

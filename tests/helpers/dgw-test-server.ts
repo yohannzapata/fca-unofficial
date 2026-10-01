@@ -18,6 +18,8 @@ export class DgwTestServer {
   onFrame: (frame: DgwFrame, server: DgwTestServer) => void = (frame, server) => {
     if (frame.type === "ping") server.send([{ type: "pong" }]);
   };
+  /** Called when a client connects (before any frame). */
+  onConnection: () => void = () => undefined;
 
   static async start(): Promise<DgwTestServer> {
     const server = new DgwTestServer();
@@ -35,6 +37,7 @@ export class DgwTestServer {
       this.#server = new WebSocketServer({ host: "127.0.0.1", port: 0 }, resolve);
       this.#server.on("connection", (socket, request) => {
         this.#socket = socket;
+        this.onConnection();
         this.upgradeHeaders.push(request.headers);
         this.upgradeUrls.push(request.url ?? "");
         socket.on("message", (data: Buffer, isBinary: boolean) => {

@@ -25,13 +25,25 @@ export const FEATURE_STATUS = Object.freeze({
     note: "Loads facebook.com/messages to validate the session and detect expiry/checkpoints. Not yet verified live.",
   },
   realtimeReceive: {
-    status: "unimplemented",
-    note: "In development: DGW transport and Lightspeed decoder are implemented; sync wiring is pending. Experimental until verified against live Messenger.",
+    status: "experimental",
+    note: "New messages over the DGW gateway with Lightspeed sync; cursors are persisted, so gaps after reconnects and restarts are filled. Not yet verified live. Text and metadata only (attachment details are not reported).",
   },
-  messageEdits: { status: "unimplemented", note: "Planned." },
-  messageUnsends: { status: "unimplemented", note: "Planned." },
-  reactions: { status: "unimplemented", note: "Planned." },
-  typingIndicators: { status: "unimplemented", note: "Planned." },
+  messageEdits: {
+    status: "experimental",
+    note: "Edit events with the new text and edit count. Not yet verified live.",
+  },
+  messageUnsends: {
+    status: "experimental",
+    note: "Unsends and removals as messageDelete events. Not yet verified live.",
+  },
+  reactions: {
+    status: "experimental",
+    note: "Reaction add/change/remove, deduplicated per message and actor. Not yet verified live.",
+  },
+  typingIndicators: {
+    status: "experimental",
+    note: "Live typing start/stop; a stop is inferred after ~6 s without a refresh. Not yet verified live.",
+  },
   threadList: { status: "unimplemented", note: "Planned." },
   messageHistory: { status: "unimplemented", note: "Planned." },
   users: { status: "unimplemented", note: "Planned." },

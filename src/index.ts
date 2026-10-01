@@ -16,6 +16,16 @@ export {
 export { DEFAULT_USER_AGENT } from "./protocol/bootstrap/browser-profile.js";
 
 export type { ClientEvents, ConnectionState, ReadyEvent, StateChangeEvent } from "./model/events.js";
+export type {
+  Mention,
+  Message,
+  MessageDeleteEvent,
+  MessageEditEvent,
+  MessageReference,
+  ReactionEvent,
+  TypingEvent,
+} from "./model/messages.js";
+export type { PipelineStats } from "./pipeline/event-pipeline.js";
 export { FEATURE_STATUS, type FeatureInfo, type FeatureName, type FeatureStatus } from "./model/status.js";
 
 export {

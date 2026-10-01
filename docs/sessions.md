@@ -69,6 +69,13 @@ knowing. Call `store.loadBackup()` deliberately if you want it.
 
 The default `.gitignore` excludes `.session/`, `appstate.json` and `*.session.json`.
 
+Besides cookies, the session holds **sync cursors** (`sync`): opaque server positions for
+each sync database, saved together with cookie rotations. They let the client resume
+where it left off after a restart, so messages that arrived while it was offline are
+delivered (marked `recovered`). A session without cursors, such as a fresh import, starts
+from the current inbox and reports nothing old. Cursors are not secret, but they are part
+of the same file and get the same protection.
+
 ## 4. Expiry and invalidation
 
 The server can end a session (you logged out, changed your password, or Facebook
@@ -80,6 +87,9 @@ revoked it) or require an interactive check. Both `connect()` and the probe
 - `CheckpointRequiredError` (`kind`: checkpoint, consent, challenge or suspended): open
   facebook.com in your browser, resolve the check, then re-export.
 - `InvalidSessionError`: the page belongs to a different account than `c_user`.
+
+A realtime gateway that rejects the session (close code 4003) also stops the client in
+state `failed`, with a non-retryable `RealtimeError`.
 
 Cookies that Facebook rotates during these requests are written back to your store
 (debounced and atomic). A cookie update that would remove a required cookie (for

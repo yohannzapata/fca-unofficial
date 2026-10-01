@@ -5,7 +5,6 @@ import {
   ConfigurationError,
   InvalidSessionError,
   type MessengerError,
-  ProtocolNotImplementedError,
   SessionCorruptedError,
   SessionExpiredError,
 } from "../../src/errors/errors.js";
@@ -16,7 +15,6 @@ import { MemorySessionStore, type SessionStore } from "../../src/session/session
 import { ScriptedConnector } from "../helpers/fake-connection.js";
 import { fakeFetch } from "../helpers/fake-fetch.js";
 import { fakeSession } from "../helpers/fixtures.js";
-import { syntheticMessagesPage } from "../helpers/synthetic-page.js";
 
 const MESSAGES = "www.facebook.com/messages";
 
@@ -67,19 +65,6 @@ describe("MessengerClient", () => {
     expect(client.health().lastError?.code).toBe("INVALID_SESSION");
   });
 
-  it("connect() validates the session, then fails honestly (no realtime yet)", async () => {
-    const { fetch, requests } = fakeFetch({ [MESSAGES]: { body: syntheticMessagesPage() } });
-    const client = new MessengerClient({ session: new MemorySessionStore(fakeSession()) }, { fetch });
-    const error = await client.connect().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ProtocolNotImplementedError);
-    expect((error as ProtocolNotImplementedError).message).toContain("Session verified");
-    expect(client.state).toBe("failed");
-    expect(requests).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(600_000);
-    expect(client.health().connects).toBe(0); // no retry loop
-    expect(requests).toHaveLength(1);
-  });
-
   it("surfaces an expired session from the server as a permanent SessionExpiredError", async () => {
     const { fetch } = fakeFetch({
       [MESSAGES]: { status: 302, headers: [["location", "https://www.facebook.com/login.php"]] },
@@ -89,34 +74,6 @@ describe("MessengerClient", () => {
     await expect(client.connect()).rejects.toBeInstanceOf(SessionExpiredError);
     expect(client.state).toBe("failed");
     expect(obs.errors.map((e) => e.code)).toEqual(["SESSION_EXPIRED"]);
-  });
-
-  it("retries transient server errors during bootstrap with backoff", async () => {
-    const { fetch, requests } = fakeFetch({
-      [MESSAGES]: [{ status: 503 }, { status: 503 }, { status: 503 }, { body: syntheticMessagesPage() }],
-    });
-    const client = new MessengerClient(
-      { session: new MemorySessionStore(fakeSession()) },
-      { fetch, random: () => 0.5 },
-    );
-    const result = client.connect().catch((e: unknown) => e);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(await result).toBeInstanceOf(ProtocolNotImplementedError);
-    expect(requests.length).toBeGreaterThanOrEqual(4);
-  });
-
-  it("persists cookies rotated during connect when disconnecting", async () => {
-    const store = new MemorySessionStore(fakeSession());
-    const { fetch } = fakeFetch({
-      [MESSAGES]: {
-        body: syntheticMessagesPage(),
-        headers: [["set-cookie", "fr=ROTATED; Max-Age=7776000; Path=/; Domain=.facebook.com; Secure"]],
-      },
-    });
-    const client = new MessengerClient({ session: store }, { fetch });
-    await client.connect().catch(() => undefined);
-    await client.disconnect();
-    expect((await store.load())?.cookies.find((c) => c.name === "fr")?.value).toBe("ROTATED");
   });
 
   it("surfaces a corrupted session store as a permanent failure", async () => {

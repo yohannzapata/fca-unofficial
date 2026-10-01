@@ -24,7 +24,8 @@ sending (yet), no password login, and no checkpoint, captcha or 2FA automation.
 | When                                      | Host                                                  | Purpose                                                            |
 | ----------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------ |
 | Now                                       | `www.facebook.com`                                    | One read-only `GET /messages` per `connect()` attempt or probe run |
-| With realtime receiving                   | `gateway.facebook.com`                                | Realtime WebSocket (DGW); GraphQL on `www.facebook.com`            |
+| Now                                       | `gateway.facebook.com`                                | Realtime WebSocket (DGW), opened by `connect()` (not by the probe) |
+| With the read API                         | `www.facebook.com`                                    | GraphQL reads (thread list, history, users)                        |
 | With attachment support                   | `*.fbcdn.net`                                         | Attachment download, **only when your code asks**                  |
 | Optional encrypted-chat package, if built | `web-chat-e2ee.facebook.com`, `reg-e2ee.facebook.com` | Encrypted chats (opt-in, separate package)                         |
 

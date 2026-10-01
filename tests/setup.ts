@@ -1,10 +1,10 @@
 /**
  * Safety net: tests must never reach real Facebook (or any non-loopback host).
- * Real fetch is only allowed to loopback test servers; everything else throws.
+ * Real fetch and WebSocket are only allowed to loopback test servers; everything else throws.
  */
-const realFetch = globalThis.fetch.bind(globalThis);
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
+const realFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
   if (!LOOPBACK.has(url.hostname)) {
@@ -12,3 +12,15 @@ globalThis.fetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof
   }
   return realFetch(input, init);
 };
+
+const RealWebSocket = globalThis.WebSocket;
+class GuardedWebSocket extends RealWebSocket {
+  constructor(url: string | URL, protocols?: string | string[] | WebSocketInit) {
+    const target = new URL(url);
+    if (!LOOPBACK.has(target.hostname)) {
+      throw new Error(`Blocked real WebSocket access in tests: ${target.host}`);
+    }
+    super(url, protocols);
+  }
+}
+globalThis.WebSocket = GuardedWebSocket;

@@ -66,9 +66,9 @@ src/
 ├── transport/
 │   ├── http/                   HttpClient, CookieJar, retry policy
 │   └── dgw/                    frame codec, DgwConnection, streams
-├── protocol/                   bootstrap, lightspeed decoder; (planned) graphql, sync,
-│                               ProtocolClient
-├── pipeline/                   (planned) normalizers, ordering, dedup, reconciler
+├── protocol/                   bootstrap, lightspeed (decoder, requests), sync cursors,
+│                               realtime session, ProtocolClient; (planned) graphql
+├── pipeline/                   EventPipeline: ordering, normalization, dedup
 ├── services/                   (planned) MessageService, ThreadService, UserService
 └── util/                       abort/timer helpers, bounded caches
 tests/
@@ -118,19 +118,22 @@ await store.save(session);
 
 ### 4.1 Events
 
-| Event                            | Payload                                                  | Source                                                   | Promise level                    |
-| -------------------------------- | -------------------------------------------------------- | -------------------------------------------------------- | -------------------------------- |
-| `ready`                          | `{ userId, resumed }`                                    | after connect + initial sync                             | stable                           |
-| `stateChange`                    | `{ from, to, reason?, attempt? }`                        | supervisor                                               | stable                           |
-| `message`                        | `Message`                                                | LS `insertMessage`/`upsertMessage` (live, not history)   | experimental until verified live |
-| `messageEdit`                    | `{ messageId, threadId?, text, editCount }`              | LS `editMessage`                                         | experimental                     |
-| `messageDelete`                  | `{ threadId, messageId, reason: "unsent" \| "removed" }` | LS `deleteThenInsertMessage(isUnsent)` / `deleteMessage` | experimental                     |
-| `reactionAdd` / `reactionRemove` | `{ threadId, messageId, actorId, reaction }`             | LS `upsertReaction` / `deleteReaction`                   | experimental                     |
-| `typing`                         | `{ threadId, userId, isTyping }`                         | LS `updateTypingIndicator`                               | experimental                     |
-| `readReceipt`                    | `{ threadId, userId, readUpTo }`                         | LS `updateReadReceipt`                                   | experimental                     |
-| `threadUpdate`                   | `{ threadId, changes }`                                  | LS thread procedures                                     | experimental                     |
-| `error`                          | `MessengerError`                                         | anywhere                                                 | stable                           |
-| `raw`                            | `{ kind, data }`                                         | decoder (opt-in)                                         | **unstable, debugging only**     |
+| Event                            | Payload                                                             | Source                                                   | Promise level                     |
+| -------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------- | --------------------------------- |
+| `ready`                          | `{ userId }`                                                        | after connect + initial sync                             | stable                            |
+| `stateChange`                    | `{ from, to, reason?, attempt?, at }`                               | supervisor                                               | stable                            |
+| `message`                        | `Message`                                                           | LS `insertMessage` (live or catch-up; never history)     | experimental until verified live  |
+| `messageEdit`                    | `{ messageId, threadId?, text, editCount, recovered }`              | LS `editMessage`                                         | experimental                      |
+| `messageDelete`                  | `{ threadId, messageId, reason: "unsent" \| "removed", recovered }` | LS `deleteThenInsertMessage(isUnsent)` / `deleteMessage` | experimental                      |
+| `reactionAdd` / `reactionRemove` | `{ threadId, messageId, actorId, reaction, isFromMe, recovered }`   | LS `upsertReaction` / `deleteReaction`                   | experimental                      |
+| `typing`                         | `{ threadId, userId, isTyping }`                                    | LS `updateTypingIndicator` (live only)                   | experimental                      |
+| `readReceipt`                    | `{ threadId, userId, readUpTo }`                                    | LS `updateReadReceipt`                                   | planned                           |
+| `threadUpdate`                   | `{ threadId, changes }`                                             | LS thread procedures                                     | planned                           |
+| `error`                          | `MessengerError`                                                    | anywhere                                                 | stable                            |
+| `raw`                            | `{ kind, data }`                                                    | decoder (opt-in)                                         | planned; unstable, debugging only |
+
+`recovered` is `true` when an event was delivered by catch-up synchronization (after a
+reconnect, after a restart, or by periodic reconciliation) rather than pushed live.
 
 Deliberate deviations from the brief's list:
 
@@ -162,18 +165,22 @@ interface Message {
   id: string; // messageId (e.g. "mid.$…")
   threadId: string; // thread key, decimal string
   senderId: string;
-  text: string | null;
+  text: string | null; // null for text-less messages (photo, sticker, file)
   timestamp: number; // ms since epoch (server timestampMs)
   isFromMe: boolean;
   kind: "user" | "admin"; // admin = system notices ("X named the group")
-  attachments: Attachment[];
-  mentions: Mention[];
+  mentions: Mention[]; // { userId, offset, length, type }; offsets in UTF-16 code units
   replyTo?: { messageId: string; senderId?: string; text?: string };
   isForwarded: boolean;
   editCount: number;
-  channel: "lightspeed" | "e2ee"; // which protocol delivered it (honesty about coverage)
+  stickerId?: string;
+  offlineThreadingId?: string; // the sending device's client id
+  recovered: boolean; // delivered by catch-up sync rather than pushed live
 }
 ```
+
+Planned additions: `attachments` (with the read API, against recorded fixtures) and a
+`channel` field once end-to-end encrypted chats are supported.
 
 Reactions are events and history annotations, not a mutable field on `Message`: the
 live stream delivers them separately, and a mutable aggregate would need a cache we do not
@@ -234,16 +241,17 @@ Guarantees, each covered by a test:
 4. **Reconnect-while-disconnecting is impossible.** `stop()` sets `stopping` before
    anything else, and every loop step checks it.
 
-### 6.3 Health and liveness _(transport details planned)_
+### 6.3 Health and liveness
 
 - **Transport liveness:** DGW ping every 10 s. The link counts as dead after 30 s with no
   inbound frame, which resolves `closed` with reason `heartbeat_timeout`.
 - **Data liveness** (the silent-stall defence, `protocol-status.md` §3.6): see §7.3.
-- `client.health()` returns `{ state, connectedSince, uptimeMs, reconnects,
-lastEventAt, lastHeartbeatAt, eventCounts, protocolErrors, droppedFrames,
-dedupSize, reconciliations }`. It is a plain local object with no network I/O.
+- `client.health()` returns `{ state, destroyed, connectedSince, uptimeMs, connects,
+reconnects, consecutiveFailures, nextRetryAt, lastError, eventCounts, events }`, where
+  `events` holds the pipeline counters (`batches`, `emitted`, `duplicatesSuppressed`,
+  `incompleteRows`, `unknownProcedures`). It is a plain local object with no network I/O.
 
-## 7. Realtime pipeline _(planned)_
+## 7. Realtime pipeline
 
 ### 7.1 Transport _(implemented)_
 
@@ -277,35 +285,58 @@ positional schema file is the single place to edit when Meta changes a schema.
 the session, the live cookie jar, an `HttpClient` bound to the client's shutdown signal, the
 browser profile, a logger and a clock. The protocol layer never touches the session store.
 
-_Implemented:_ bootstrap, i.e. load `/messages`, classify redirects and extract
-config (`src/protocol/bootstrap/*`, `protocol-status.md` §13). Page tokens live in memory
-for one attempt; caching across reconnects arrives with the realtime transport, together with
-invalidation on DGW auth failures.
+Each connection attempt runs, in order (`MessengerProtocolClient.connect`):
 
-_Planned:_ open the DGW connection, open one persistent stream per sync database
-`[1, 2, 95, 104]` with the stored `last_applied_cursor`, and recursively sync DB 1 until
-its cursor stops advancing. Decoded LS payloads become **typed rows**
-(`{ procedure: "insertMessage", row: InsertMessageRow }`). Unknown procedures are counted
-and, if enabled, surfaced via `raw`. They are never guessed at.
+1. **Bootstrap** (`src/protocol/bootstrap/*`, `protocol-status.md` §13): load
+   `/messages`, classify redirects and extract config. Page tokens live in memory for one
+   attempt and are re-read on every reconnect, so a stale token never outlives a
+   connection.
+2. **Realtime session** (`src/protocol/realtime/realtime-session.ts`): open the DGW
+   connection with the browser profile's headers and the sorted `x-dgw-*` query. On the
+   first connection of a client, send the reference client's read-only thread-list task.
+   Then open one persistent stream per sync database `[1, 2, 95, 104]` and sync each from
+   its stored `last_applied_cursor` (or with sync params, per database), repeating while
+   the cursor advances (at most 100 pages). The mailbox (DB 1) is required; failures of the
+   other databases are logged and tolerated, as in the reference client.
+3. **Live:** data pushed on a stream without a matching `request_id` is a live batch.
+
+Decoded LS payloads become **typed rows** (`{ procedure: "insertMessage", row }`) and are
+handed to the client's sink as a `RowBatch { source, database, calls }`, where `source`
+is `baseline | sync | reconcile | live | task`. After the sink accepts a batch, cursors
+from its `executeFirstBlockForSyncTransaction(V4)` rows are applied and handed back for
+persistence. Unknown procedures are counted, never guessed at.
 
 ### 7.3 Pipeline: ordering, normalization, dedup, reconciliation
 
-1. **Ordering:** rows from one LS batch are dispatched in the fixed order documented in
-   `protocol-status.md` §6, so an edit or reaction never precedes its message's insert.
-2. **Normalization:** rows → domain events (§4.1). Edits carry no thread key, so a
+`EventPipeline` (`src/pipeline/event-pipeline.ts`) turns row batches into events.
+
+1. **News vs. state:** `baseline` (first sync of a database with no stored cursor) and
+   `task` batches describe the current inbox, not news: they only seed dedup and indexes.
+   `upsertMessage` rows are history and never produce `message`; only `insertMessage` does.
+   So the first run on a fresh session reports nothing old, and later runs report what
+   arrived while offline.
+2. **Ordering:** within a batch, rows are dispatched in a fixed order (messages, edits,
+   typing, unsends/removals, reactions), so an edit or reaction never precedes its
+   message's insert.
+3. **Normalization:** rows → domain events (§4.1). Edits carry no thread key, so a
    bounded `messageId → threadId` index (LRU, 10k entries) resolves it; when missing,
-   `threadId` is `undefined`, never invented.
-3. **Dedup:** a bounded TTL+LRU set keyed by semantic identity, for example
-   `m:<messageId>`, `e:<messageId>:<editCount>`, `d:<messageId>`,
-   `r:<messageId>:<actorId>:<reaction>:<add|rm>`, `t:<threadId>:<userId>:<bool>`
-   (short TTL). Default capacity 20k and TTL 24 h. Timestamps are never used as identity.
-4. **Reconciliation:** on every reconnect (cursor catch-up is part of `connect()`), and
-   every `reconcileIntervalMs` (default 5 min) while connected, re-sync DB 1 from the
-   stored cursor. Rows that were already seen are dropped by dedup; genuinely missed
-   rows are emitted with `recovered: true` in their metadata. The count is exposed in
-   `health().reconciliations`.
-5. **History is not live:** rows from history fetches are routed to the requesting call,
-   never emitted as `message` events.
+   `threadId` is `undefined`, never invented. Rows missing required fields are counted as
+   `incompleteRows`, never emitted half-filled.
+4. **Dedup:** a bounded TTL+LRU set keyed by semantic identity: `m:<messageId>`,
+   `e:<messageId>:<editCount>`, `d:<messageId>`. Reactions and typing are deduplicated by
+   state instead: the last reaction per `(messageId, actorId)`, and the typing state per
+   `(threadId, userId)` with an inferred stop after 6 s. Default capacity 20k keys for
+   24 h. Timestamps are never used as identity.
+5. **Reconciliation:** cursor catch-up runs on every reconnect as part of `connect()`, and
+   every `reconcileIntervalMs` (default 5 min) while connected DB 1 is re-synced from its
+   cursor. Rows already seen are dropped by dedup; genuinely missed rows are emitted with
+   `recovered: true`.
+6. **Persistence:** cursors are saved with the session (debounced, atomic), so a restart
+   resumes from the last cursor. Delivery is at-least-once across restarts: dedup memory
+   is not persisted, so an application that must never double-process should key its own
+   storage on `message.id`.
+7. **History is not live:** rows from history fetches will be routed to the requesting
+   call, never emitted as `message` events.
 
 ### 7.4 Backpressure
 

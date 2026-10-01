@@ -1,6 +1,6 @@
 import { ClientStateError, InvalidSessionError } from "../errors/errors.js";
 import type { Logger } from "../logging/logger.js";
-import { type SessionData, validateSessionData } from "../session/session.js";
+import { type SessionData, type StoredSyncState, validateSessionData } from "../session/session.js";
 import type { SessionStore } from "../session/session-store.js";
 import { CookieJar } from "../transport/http/cookie-jar.js";
 
@@ -71,19 +71,27 @@ export class SessionManager {
     return this.#jar;
   }
 
-  /** Writes pending cookie changes now. Safe to call at any time; never throws. */
+  /** Records new sync cursors; persisted with the next (debounced) save. */
+  updateSync(databases: StoredSyncState["databases"]): void {
+    if (!this.#current) return;
+    this.#current = { ...this.#current, sync: { databases, updatedAt: this.#now() } };
+    this.#dirty = true;
+    this.#schedule();
+  }
+
+  /** Writes pending cookie and cursor changes now. Safe to call at any time; never throws. */
   async flush(): Promise<void> {
     this.#clearTimer();
-    if (this.#dirty && this.#current && this.#jar) {
+    if (this.#dirty && this.#current) {
       this.#dirty = false;
       const next: SessionData = {
         ...this.#current,
-        cookies: this.#jar.toSessionCookies(),
+        cookies: this.#jar ? this.#jar.toSessionCookies() : this.#current.cookies,
         updatedAt: this.#now(),
       };
       const validation = validateSessionData(next);
       if (!validation.ok) {
-        this.#log.warn("not persisting cookie update: the session lost required cookies", {
+        this.#log.warn("not persisting session update: it failed validation (e.g. lost required cookies)", {
           problems: validation.problems,
         });
       } else {

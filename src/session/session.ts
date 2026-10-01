@@ -30,7 +30,20 @@ export interface SessionData {
   readonly cookies: readonly SessionCookie[];
   /** User agent kept fixed for the life of the session (consistency, not randomization). */
   readonly userAgent?: string;
+  /** Realtime sync cursors (opaque server positions), so reconnects resume where they left off. */
+  readonly sync?: StoredSyncState;
   readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/** Per-database sync position, keyed by database id. */
+export interface StoredSyncState {
+  readonly databases: Readonly<
+    Record<
+      string,
+      { readonly cursor: string | null; readonly sendSyncParams: boolean; readonly syncChannel: number }
+    >
+  >;
   readonly updatedAt: number;
 }
 
@@ -240,6 +253,7 @@ export function validateSessionData(input: unknown): ValidationResult<SessionDat
     problems.push("updatedAt must be a number");
   if (data["userAgent"] !== undefined && typeof data["userAgent"] !== "string")
     problems.push("userAgent must be a string");
+  if (data["sync"] !== undefined) problems.push(...validateSyncState(data["sync"]));
 
   const cookies = data["cookies"];
   if (!Array.isArray(cookies)) {
@@ -274,4 +288,33 @@ function validateCookie(input: unknown): string | undefined {
   if (typeof c["secure"] !== "boolean" || typeof c["httpOnly"] !== "boolean")
     return "secure/httpOnly must be booleans";
   return undefined;
+}
+
+function validateSyncState(input: unknown): string[] {
+  if (typeof input !== "object" || input === null) return ["sync must be an object"];
+  const sync = input as Record<string, unknown>;
+  const problems: string[] = [];
+  if (typeof sync["updatedAt"] !== "number" || !Number.isFinite(sync["updatedAt"]))
+    problems.push("sync.updatedAt must be a number");
+  const databases = sync["databases"];
+  if (typeof databases !== "object" || databases === null || Array.isArray(databases)) {
+    problems.push("sync.databases must be an object");
+    return problems;
+  }
+  for (const [db, state] of Object.entries(databases as Record<string, unknown>)) {
+    if (!/^\d{1,6}$/.test(db)) {
+      problems.push("sync.databases has an invalid database id");
+      continue;
+    }
+    const st = state as Record<string, unknown> | null;
+    const valid =
+      typeof st === "object" &&
+      st !== null &&
+      (st["cursor"] === null || typeof st["cursor"] === "string") &&
+      typeof st["sendSyncParams"] === "boolean" &&
+      typeof st["syncChannel"] === "number" &&
+      Number.isSafeInteger(st["syncChannel"]);
+    if (!valid) problems.push(`sync.databases[${db}] is invalid`);
+  }
+  return problems;
 }
